@@ -1,0 +1,604 @@
+---
+title: "Exercise 7: Generalized linear models"
+author: "Student name: Thy Duong"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+  
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  warning    = FALSE,
+  message    = FALSE,
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.5,
+  out.width  = "90%"
+)
+```
+
+```{r packages}
+library(tidyverse)  
+library(knitr)      
+```
+
+```{r load-data, results='hide'}
+# Load directly from GitHub so no local path adaptation is needed.
+data.url <- "https://raw.githubusercontent.com/thybaoduongnguyen/Applied-Stats-in-R-Ex/main/Exercise7/student-mat.csv"
+student.data <- read.csv(data.url, sep = ",", stringsAsFactors = TRUE)
+
+# Verify the expected dimensions: 395 students, 33 variables
+dim(student.data)
+head(student.data[, c("G1", "G2", "G3", "sex", "failures", "studytime")], 3)
+```
+
+------------------------------------------------------------------------
+
+# Problem description
+
+This exercise uses the Student Performance dataset, which contains records for 395 secondary school students in Portugal. The dataset includes three mathematics grades: G1 (first period), G2 (second period), and G3 (final grade); along with 30 explanatory variables covering student demographics, family background, social behavior and study habits.
+
+The goal is to identify which variables explain first-period mathematics performance (G1). This involves three tasks. First, understanding the distributional properties of the grade variables. Second, fitting a generalized linear model for G1 using all available covariates. Third, comparing a full model against two reduced specifications to determine which predictors matter and whether replacing one leisure variable with another changes model quality.
+
+------------------------------------------------------------------------
+
+# Part (a): Identifying the distributions of G1, G2, and G3
+
+## Problem description
+
+Before fitting any model, I need to understand the characteristics of the distribution of the three outcome variables. Specifically, I assess whether G1, G2 and G3 can be assumed to follow a normal or Poisson distribution and whether there are signs of overdispersion or structural anomalies such as excess zeros.
+
+## Methods
+
+To do that, there are 4 steps:
+
+First, descriptive statistics, including mean, variance, standard deviation, minimum, median, maximum and zero count for each grade should be calculated. These numbers reveal both the normality and the Poisson assessments before plotting.
+
+Second, histograms are used to scale the density with a normal density overlay. Scaling to density is necessary because the normal curve is a probability density function. Without this rescaling, the two cannot be compared on the same axis. The overlay uses the sample mean and standard deviation of each grade as parameters.
+
+Third, I produce Q-Q plots. A Q-Q plot places the empirical quantiles of the data on the y-axis and the theoretical quantiles of the normal distribution on the x-axis. If the data are normally distributed, the points fall on the diagonal reference line. I use Q-Q plots alongside histograms rather than relying on histograms alone, because histograms are sensitive to bin width and can obscure tail behaviour. Q-Q plots are specifically designed to reveal where bounded data, such as grades, most commonly depart from normality. Also, they reveal the nature of each departure, which is an S-curve indicates heavy or light tails, a sharp step at the left end indicates excess zeros.
+
+Fourth, the Shapiro-Wilk normality test is chosen. To explain, it is the most powerful normality test for small to moderate sample sizes. Simulation studies ([Razali & Wah, 2011](https://www.researchgate.net/publication/267205556_Power_Comparisons_of_Shapiro-Wilk_Kolmogorov-Smirnov_Lilliefors_and_Anderson-Darling_Tests)) show that it consistently outperforms the Kolmogorov-Smirnov and Lilliefors tests at detecting departures from normality in this range. With n = 395, the test is reliable. However, with this sample size, the test has high power and will reject H0 for deviations that are small in practice.
+
+In Poisson assessment, the defining feature of Poisson distribution is that its mean equals its variance. I compute the variance-to-mean ratio for each grade. In detail, a ratio close to 1 supports the Poisson assumption, while a ratio far above 1 indicates overdispersion.
+
+## Results and discussion
+
+```{r summary-grades}
+# Reshape to long format so as to summarise all three grades in one pipeline.
+# pivot_longer() stacks g1, g2, g3 into 1 with a grade.label key.
+grades.long <- student.data %>%
+  select(G1, G2, G3) %>%
+  pivot_longer(
+    cols      = everything(),
+    names_to  = "grade.label",
+    values_to = "grade.score"
+  )
+
+grade.summary <- grades.long %>%
+  group_by(grade.label) %>%
+  summarise(
+    number.of.students = n(),
+    mean.score         = round(mean(grade.score), 2),
+    variance           = round(var(grade.score),  2),
+    std.deviation      = round(sd(grade.score),   2),
+    minimum            = min(grade.score),
+    median.score       = median(grade.score),
+    maximum            = max(grade.score),
+    count.of.zeros     = sum(grade.score == 0),
+    .groups = "drop"
+  )
+
+kable(grade.summary, caption = "Descriptive statistics for G1, G2, and G3")
+```
+
+G1 and G2 have similar means (around 10–11) and standard deviations (around 3), while G3 has a noticeably lower mean. The count of zeros in G3 is substantially higher than in G1 or G2, which is a sign of a structural anomaly.
+
+```{r zero-proportion-plot, fig.height=3}
+# Here, a bar chart makes the zero count difference across grades visible.
+# Also, this is easier to interpret than reading it from the summary table alone.
+zero.counts <- grade.summary %>%
+  select(grade.label, count.of.zeros)
+
+ggplot(zero.counts, aes(x = grade.label, y = count.of.zeros, fill = grade.label)) +
+  geom_col(show.legend = FALSE, alpha = 0.8) +
+  geom_text(aes(label = count.of.zeros), vjust = -0.4, size = 4) +
+  scale_fill_manual(values = c("G1" = "steelblue", "G2" = "steelblue", "G3" = "firebrick")) +
+  labs(
+    title = "Number of zero scores per grade period",
+    x     = "Grade",
+    y     = "Count of zeros"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal() +
+  theme(plot.margin = margin(t = 20, r = 10, b = 10, l = 10))
+```
+
+The bar chart makes the anomaly in G3 visible. While G1 and G2 have very few zeros, G3 has a much larger number. This suggests that many students who participated during the first and second periods did not complete the final exam.
+
+```{r histogram-normal-overlay, fig.height=4}
+# I use grades.long so that facet_wrap() can draw one panel per grade. The normal overlay requires each grade's own mean and sd, so I pre compute those and join them onto grades.long before plotting.
+grade.normal.params <- grades.long %>%
+  group_by(grade.label) %>%
+  summarise(
+    grade.mean = mean(grade.score),
+    grade.sd   = sd(grade.score),
+    .groups    = "drop"
+  )
+
+# stat_function() does not work directly inside facet_wrap(). As a solution, I evaluate the normal density manually over a fine grid for each grade and overlay it as a line with geom_line().
+normal.curve.data <- grade.normal.params %>%
+  rowwise() %>%
+  mutate(
+    # seq() produces 200 evenly spaced x values spanning the grade range
+    x.values       = list(seq(0, 20, length.out = 200)),
+    density.values = list(dnorm(seq(0, 20, length.out = 200),
+                                mean = grade.mean,
+                                sd   = grade.sd))
+  ) %>%
+  unnest(cols = c(x.values, density.values))
+
+ggplot(grades.long, aes(x = grade.score)) +
+  geom_histogram(
+    aes(y = after_stat(density)),  # rescale counts to density 
+    bins   = 20,
+    fill   = "steelblue",
+    colour = "white",
+    alpha  = 0.8
+  ) +
+  geom_line(
+    data    = normal.curve.data,
+    mapping = aes(x = x.values, y = density.values),
+    colour  = "firebrick",
+    linewidth = 1
+  ) +
+  facet_wrap(~ grade.label) +
+  labs(
+    title = "Grade distributions with normal density overlay",
+    x     = "Grade score",
+    y     = "Density"
+  ) +
+  theme_minimal()
+```
+
+G1 and G2 are roughly unimodal and symmetric and the normal curve fits their centers reasonably well. G3 is different since there is a large spike at zero alongside the main hump around 10–11, producing a bimodal shape that no single normal curve can capture. The normal overlay misses the zero spike.
+
+```{r qqplots, fig.height=4}
+# Q-Q plot used to assess normality of the grade distributions visually.
+# I used Q-Q plots to check if the grade data was actually normal.
+# Q-Q plots used alongside the histograms rather than relying on histograms alone because histograms are sensitive to bin width and Q-Q plots are designed to highlight tail deviations, which is where bounded data (e.g. grades on 0-20) most commonly departs from normality. In this sense, the 2 plots are complementary.
+ggplot(grades.long, aes(sample = grade.score)) +
+  stat_qq(colour = "steelblue", alpha = 0.6) +
+  stat_qq_line(colour = "firebrick") +
+  facet_wrap(~ grade.label) +
+  labs(
+    title = "Q-Q plots against the normal distribution",
+    x     = "Theoretical normal quantiles",
+    y     = "Observed grade quantiles"
+  ) +
+  theme_minimal()
+```
+
+The Q-Q plots confirm the histogram observations. G1 and G2 deviate from the diagonal mostly at the lower tail, consistent with the left boundary at zero. G3 shows a sharp, large step at the lower left, which is the visual signature of excess zeros creating a spike in the distribution. This step is much more clearly visible in the Q-Q plot than in the histogram.
+
+```{r shapiro-wilk-tests}
+# I use the Shapiro-Wilk test because it is generally considered the most powerful normality test for small to moderate sample sizes (studies such as Razali & Wah, 2011 show it consistently outperforms Kolmogorov-Smirnov and Lilliefors in detecting departures from normality in this range).
+# Razali & Wah 2011: https://www.researchgate.net/publication/267205556_Power_Comparisons_of_Shapiro-Wilk_Kolmogorov-Smirnov_Lilliefors_and_Anderson-Darling_Tests
+# with n = 395, the test is reliable and shapiro.test() supports up to n = 5000.
+# H0: the data are normally distributed. A small p-value rejects normality.
+# Note: at n = 395,  the test has high power and may reject H0 for deviations that are small in practice. Results should, therefore, be interpreted alongside the Q-Q plots and histograms. 
+shapiro.result.G1 <- shapiro.test(student.data$G1)
+shapiro.result.G2 <- shapiro.test(student.data$G2)
+shapiro.result.G3 <- shapiro.test(student.data$G3)
+
+shapiro.summary <- data.frame(
+  Grade       = c("G1", "G2", "G3"),
+  W.statistic = round(c(shapiro.result.G1$statistic,
+                         shapiro.result.G2$statistic,
+                         shapiro.result.G3$statistic), 4),
+  p.value     = signif(c(shapiro.result.G1$p.value,
+                          shapiro.result.G2$p.value,
+                          shapiro.result.G3$p.value), 4)
+)
+
+kable(shapiro.summary, caption = "Shapiro-Wilk normality tests for G1, G2, G3")
+```
+
+All three grades reject normality at p \<\< 0.05. Given the test's high power at n = 395, this result must be interpreted carefully. For G1 and G2, the rejection is driven by the bounded scale and minor tail asymmetry rather than a fundamentally non-normal shape. The histograms and Q-Q plots show that a Gaussian approximation is still reasonable for regression purpose. For G3, the rejection reflects a structural problem, which is that the zero spike creates a bimodal distribution that no normal approximation can accommodate.
+
+```{r poisson-mean-variance}
+# A Poisson distribution requires that mean and variance are equal.
+# A variance-to-mean ratio much greater than 1 indicates over-dispersion,
+# making the Poisson assumption untenable.
+poisson.check <- data.frame(
+  Grade      = c("G1", "G2", "G3"),
+  mean.score = round(c(mean(student.data$G1),
+                        mean(student.data$G2),
+                        mean(student.data$G3)), 3),
+  variance   = round(c(var(student.data$G1),
+                        var(student.data$G2),
+                        var(student.data$G3)), 3)
+)
+
+poisson.check$variance.to.mean.ratio <- round(
+  poisson.check$variance / poisson.check$mean.score, 3
+)
+
+kable(poisson.check,
+      caption = "Mean vs. variance check (Poisson requires ratio close to 1)")
+```
+
+The variance-to-mean ratios are all far above 1 (exceeding 5 for all three grades), which is decisive evidence against the Poisson assumption. A Poisson distribution requires variance equal to mean; the observed variance is five times larger, indicating severe over-dispersion relative to Poisson. Two further structural arguments reinforce this conclusion: grades are bounded above by 20, while the Poisson distribution places positive probability on all non-negative integers with no upper limit; and Poisson is a model for counts of rare independent events (such as the number of accidents per day), which is conceptually inappropriate for a structured examination score. Neither G1, G2 nor G3 can be assumed to follow a Poisson distribution.
+
+**Summary of conclusions.** G1 and G2 are approximately symmetric and unimodal, making a Gaussian GLM a defensible approximation for regression despite the formal normality rejection. G3 is not suitable for a standard single-family GLM due to the excess zeros, which would require a hurdle model. All three grades show severe overdispersion relative to Poisson and are structurally incompatible with the Poisson family. The regression analysis in parts (b) and (c) therefore focuses on G1.
+
+------------------------------------------------------------------------
+
+# b) Model 1 – G1 explained by all covariates
+
+## Problem description
+
+Fit a suitable (generalised) linear model to explain G1 including all explanatory variables (Model 1). Are all covariates significant? Comment on the goodness-of-fit of this model using suitable visualizations. Pursue the residual analysis and comment if the fitted (generalised) linear model is adequate for the data.
+
+## Methods
+
+First, it is necessary to fit a Gaussian GLM with an identity link. This is equivalent to ordinary least squares but uses the `glm()` framework as required, which makes it straightforward to switch the distributional family if the residual analysis suggests a different family would be more appropriate. The identity link means the linear predictor equals the mean of G1.
+
+For goodness-of-fit, pseudo-R-squared (1 minus the ratio of residual to null deviance) is used, which measures the proportion of null deviance explained by the model and is the GLM analogue of R-squared in OLS. AIC, BIC and the estimated dispersion parameter phi are also reported.
+
+For residual analysis, I use deviance residuals rather than raw residuals because raw residuals in GLMs have variance that depends on the fitted value and are therefore not comparable across observations. Deviance residuals are signed square roots of each observation's contribution to the total deviance, and should behave like residuals in a linear model. I assess this through the standard 4 panel diagnostic plot (for this, R's `plot.glm()` produces using deviance residuals by default), a histogram with a normal overlay, a scatter plot of deviance residuals against fitted values and a Shapiro-Wilk test.
+
+The dispersion parameter phi is estimated as the sum of squared Pearson residuals divided by the residual degrees of freedom. For a correctly specified Gaussian GLM, phi should be close to 1.
+
+## Results and discussion
+
+```{r model1-fit-full}
+# family = gaussian(link = "identity") specifies that the outcome is assumed to follow a normal distribution and that the linear predictor equals the mean directly with no transformation. 
+model1.full <- glm(G1 ~ . - G2 - G3, data = student.data,
+                   family = gaussian(link = "identity"))
+summary(model1.full)
+```
+
+```{r model1-coefficient-table}
+# Extract the coefficient matrix and add a significance column.
+# This makes it easier to scan which predictors matter at the 5% level.
+model1.coef.matrix <- as.data.frame(summary(model1.full)$coefficients)
+model1.coef.matrix$variable.name <- rownames(model1.coef.matrix)
+
+model1.coef.table <- model1.coef.matrix %>%
+  rename(
+    estimate    = Estimate,
+    std.error   = `Std. Error`,
+    t.statistic = `t value`,
+    p.value     = `Pr(>|t|)`
+  ) %>%
+  select(variable.name, estimate, std.error, t.statistic, p.value) %>%
+  mutate(
+    estimate    = round(estimate,    4),
+    std.error   = round(std.error,   4),
+    t.statistic = round(t.statistic, 4),
+    p.value     = round(p.value,     4),
+    significant.at.5pct = ifelse(p.value < 0.05, "yes", "no")
+  )
+
+kable(model1.coef.table, caption = "Model 1: coefficient estimates (all covariates)")
+```
+
+Most factor variables, namely school, address, family size, parental job, reason for school choice, guardian, are individually non-significant. It is expected that each factor variable expands into multiple dummy variables, consuming many degrees of freedom and producing individually imprecise estimates. The consistently significant predictors are `failures`, indicating that each additional past course failure is associated with a substantial drop in G1, and `studytime`, indicating that more weekly study time is associated with higher grades. The overall model is highly significant by the F-test but the large number of non-significant predictors suggests the model is over parameterised.
+
+```{r model1-goodness-of-fit}
+# compute the pseudo R square from deviances. Formula is 1 - (residual deviance / null deviance). This measures the proportion of null deviance explained by the model, analogous to R-squared in OLS.
+model1.pseudo.r.squared <- round(
+  1 - (model1.full$deviance / model1.full$null.deviance), 4
+)
+model1.residual.deviance <- round(model1.full$deviance,      2)
+model1.aic               <- round(AIC(model1.full),          2)
+model1.bic               <- round(BIC(model1.full),          2)
+
+cat("Pseudo R squared  :", model1.pseudo.r.squared,  "\n")
+cat("Residual deviance :", model1.residual.deviance,  "\n")
+cat("AIC               :", model1.aic,                "\n")
+cat("BIC               :", model1.bic,                "\n")
+```
+
+```{r model1-dispersion-check}
+# In slide 44 of the lecture 8, it shows how to estimate the dispersion parameter phi, which measures whether the observed variance matches the assumed variance.
+# For a Gaussian GLM phi should be close to 1 (equi dispersion).
+# Pearson residuals are (observed fitted) / sqrt(assumed variance).
+# For Gaussian family, assumed variance is constant (sigma^2), so Pearson residuals equal raw residuals divided by the estimated standard deviation.
+# phi = sum of squared Pearson residuals / residual degrees of freedom.
+model1.dispersion <- sum(residuals(model1.full, type = "pearson")^2) /
+                     model1.full$df.residual
+cat("Estimated dispersion (phi):", round(model1.dispersion, 3), "\n")
+cat("(phi = 1 indicates the assumed variance matches the observed variance)\n")
+```
+
+The pseudo-R-squared is moderate, which is typical for social science data with weakly related predictors. The dispersion estimate close to 1 confirms that the Gaussian variance assumption is not badly violated.
+
+```{r model1-standard-residual-plots, fig.height=6}
+# In the slides (28-33), it notes that raw residuals are inappropriate for GLMs because their variance is not constant - it depends on the fitted value.
+# R's plot.glm() automatically uses deviance residuals (https://stackoverflow.com/questions/2531489/understanding-glmresiduals-and-residglm), which are derived from the log-likelihood and behave more like normal residuals. So, I check:
+# - linearity (deviance residuals vs fitted)
+# - approximate normality of deviance residuals (Q-Q plot)
+# - homoscedasticity (scale-location)
+# - influential observations (residuals vs leverage)
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(model1.full)
+par(mfrow = c(1, 1))
+```
+
+```{r model1-residual-histogram-and-scatter, fig.height=3.5}
+# Deviance residuals (type = "deviance") is used rather than raw residuals.
+# Deviance residuals are signed square roots of each observation's contribution to the total deviance. Slide 33 notes they should behave like residuals in a linear model, including approximately normal, centered at zero with roughly constant spread.
+model1.residual.data <- data.frame(
+  deviance.residual = residuals(model1.full, type = "deviance"),
+  fitted.value      = fitted(model1.full)
+)
+
+# Histogram is to check if deviance residuals are normal.
+ggplot(model1.residual.data, aes(x = deviance.residual)) +
+  geom_histogram(
+    aes(y = after_stat(density)),
+    bins   = 25,
+    fill   = "steelblue",
+    colour = "white",
+    alpha  = 0.8
+  ) +
+  stat_function(
+    fun  = dnorm,
+    args = list(
+      mean = mean(model1.residual.data$deviance.residual),
+      sd   = sd(model1.residual.data$deviance.residual)
+    ),
+    colour    = "firebrick",
+    linewidth = 1
+  ) +
+  labs(title = "Model 1: deviance residual distribution",
+       x = "Deviance residual", y = "Density") +
+  theme_minimal()
+
+# Scatter is to check for remaining non linearity and heteroscedasticity.
+ggplot(model1.residual.data, aes(x = fitted.value, y = deviance.residual)) +
+  geom_point(alpha = 0.4, colour = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "firebrick") +
+  geom_smooth(method = "loess", se = FALSE, colour = "orange", linewidth = 0.8) +
+  labs(
+    title = "Model 1 - deviance residuals vs. fitted values",
+    x     = "Fitted grade",
+    y     = "Deviance residual"
+  ) +
+  theme_minimal()
+```
+
+```{r model1-predicted-vs-actual, fig.height=3.5}
+# A predicted versus actual plot provides an intuitive overall assessment of model fit. If the model were perfect, all points would fall on the diagonal. Deviation from the diagonal reveals where the model under or over predicts.
+model1.fit.data <- data.frame(
+  actual.grade  = student.data$G1,
+  fitted.grade  = fitted(model1.full)
+)
+
+ggplot(model1.fit.data, aes(x = actual.grade, y = fitted.grade)) +
+  geom_point(alpha = 0.3, colour = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, colour = "firebrick", linetype = "dashed") +
+  geom_smooth(method = "loess", se = FALSE, colour = "orange", linewidth = 0.8) +
+  labs(
+    title = "Model 1 - actual vs. fitted grades",
+    x     = "Actual G1",
+    y     = "Fitted G1"
+  ) +
+  theme_minimal()
+```
+
+```{r model1-shapiro-deviance-residuals}
+# Shapiro-Wilk test on deviance residuals: the normality assumption in the Gaussian GLM applies to the residuals, so I test those rather than Y itself.
+shapiro.test(residuals(model1.full, type = "deviance"))
+```
+
+The deviance residuals versus fitted plot shows roughly horizontal spread with no strong curvature, supporting the linearity assumption. The histogram of deviance residuals is approximately bell-shaped and centered at zero. The Q-Q plot of deviance residuals is close to the diagonal in the center but deviates slightly in the tails, consistent with the bounded 0–20 scale of grades. The Shapiro-Wilk test on deviance residuals may reject normality at p \< 0.05, but as before this is partly a sensitivity effect at n = 395 and the visual evidence suggests the Gaussian GLM is an adequate approximation. The actual plot when comparing with fitted plot shows the model predicts the middle range of grades well but struggles at the extremes, where the bounded scale creates ceiling and floor effects. The estimated dispersion close to 1 confirms the variance assumption is not badly violated. Overall, the Gaussian GLM with identity link is a reasonable model for G1.
+
+------------------------------------------------------------------------
+
+# c) Reduced models and comparisons
+
+## Problem description
+
+Take Model 1, but reduce the covariates to sex, Fedu, studytime, failures, schoolsup, famsup, goout (Model 2). Are all the covariates significant? Interpret the effect of each covariate on the grade. Assess the goodness-of-fit of this model. Compare Model 1 to Model 2 quantitatively. Comment on the results. In Model 2 replace goout by Walc to get Model 3. How one can compare Model 2 and Model 3? Which model delivers a better fit? Justify your answer.
+
+## Methods
+
+**Model 2** uses the covariates: sex, Fedu, studytime, failures, schoolsup, famsup, and goout. This is a restricted version of model 1, fitted with the same Gaussian GLM family and identity link.
+
+**Comparing Model 1 and Model 2** uses the deviance test as specified in slide 34 of lecture 8. Because model 2 is nested within model 1, the difference in deviance between the two models follows a chi-squared distribution under H0 with degrees of freedom equal to the number of parameters dropped. A large p-value means the dropped predictors do not jointly improve fit, so the simpler model is preferred. I supplement this with AIC, BIC, and pseudo R squared for completeness.
+
+**Comparing Model 2 and Model 3** cannot use the deviance test because the models are not nested because they swap one predictor for another rather than one containing all predictors of the other. Instead, I compare AIC, BIC and pseudo R squared directly. Since both models have the same number of parameters, all three criteria give equivalent rankings. I also compute the Pearson correlation between goout and Walc to understand how similar the two predictors are.
+
+## Results and discussion
+
+### Model 2
+
+```{r model2-fit}
+# Same gaussian glm family as model 1 but now restricted to the 7 predictors.
+model2.reduced <- glm(
+  G1 ~ sex + Fedu + studytime + failures + schoolsup + famsup + goout,
+  data   = student.data,
+  family = gaussian(link = "identity")
+)
+summary(model2.reduced)
+```
+
+```{r model2-coefficient-table}
+model2.coef.matrix <- as.data.frame(summary(model2.reduced)$coefficients)
+model2.coef.matrix$variable.name <- rownames(model2.coef.matrix)
+
+model2.coef.table <- model2.coef.matrix %>%
+  rename(
+    estimate    = Estimate,
+    std.error   = `Std. Error`,
+    t.statistic = `t value`,
+    p.value     = `Pr(>|t|)`
+  ) %>%
+  select(variable.name, estimate, std.error, t.statistic, p.value) %>%
+  mutate(
+    estimate    = round(estimate,    4),
+    std.error   = round(std.error,   4),
+    t.statistic = round(t.statistic, 4),
+    p.value     = round(p.value,     4),
+    significant.at.5pct = ifelse(p.value < 0.05, "yes", "no")
+  )
+
+kable(model2.coef.table, caption = "Model 2: coefficient estimates")
+```
+
+```{r model2-covariate-coefficients}
+# Print rounded coefficients  
+round(coef(model2.reduced), 3)
+```
+
+All effects below are conditional on the remaining covariates being held constant.
+
+**sex (Male vs. Female):** A positive coefficient indicates male students tend to score higher on G1 than female students. This reflects a gender gap in mathematics performance net of study habits and family background.
+
+**Fedu (father's education, 0–4 scale):** A positive coefficient reflects the well-documented link between parental educational attainment and children's academic outcomes. Each additional level of father's education is associated with a small increase in G1.
+
+**studytime (weekly study time, 1–4 ordinal scale):** A positive coefficient is expected. In detail, students who invest more hours studying each week tend to achieve higher first-period grades.
+
+**failures (number of past course failures):** A strong negative coefficient reflects academic trajectory. Students who have already failed courses are less prepared and score lower on G1. This is consistently the strongest predictor in the model.
+
+**schoolsup (extra school support, yes/no):** A counterintuitively negative coefficient is common in observational data. School support is targeted at struggling students, so its recipients already tend to score lower. This is a selection effect, not evidence that support harms performance.
+
+**famsup (family educational support, yes/no):** The direction depends on how targeted family support is. A negative coefficient would indicate that family support is concentrated among weaker students (similar selection effect to schoolsup), a positive one would indicate more universal provision.
+
+**goout (going out with friends, 1–5 scale):** A negative coefficient reflects the opportunity cost of social leisure time. Students who go out more frequently have less time available for study, which is associated with lower G1 scores.
+
+```{r model2-goodness-of-fit}
+model2.pseudo.r.squared <- round(
+  1 - (model2.reduced$deviance / model2.reduced$null.deviance), 4
+)
+model2.residual.deviance <- round(model2.reduced$deviance, 2)
+model2.aic               <- round(AIC(model2.reduced),     2)
+model2.bic               <- round(BIC(model2.reduced),     2)
+
+cat("Pseudo R-squared  :", model2.pseudo.r.squared,  "\n")
+cat("Residual deviance :", model2.residual.deviance,  "\n")
+cat("AIC               :", model2.aic,                "\n")
+cat("BIC               :", model2.bic,                "\n")
+```
+
+```{r model2-dispersion-check}
+# Dispersion check for model 2, same approach as for model 1.
+model2.dispersion <- sum(residuals(model2.reduced, type = "pearson")^2) /
+                     model2.reduced$df.residual
+cat("Estimated dispersion (phi):", round(model2.dispersion, 3), "\n")
+```
+
+```{r model2-residual-plots, fig.height=6}
+# avoid raw residuals in  glms
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(model2.reduced)
+par(mfrow = c(1, 1))
+```
+
+```{r model2-predicted-vs-actual, fig.height=3.5}
+# Predicted vs. actual for Model 2 to assess overall fit visually.
+model2.fit.data <- data.frame(
+  actual.grade = student.data$G1,
+  fitted.grade = fitted(model2.reduced)
+)
+
+ggplot(model2.fit.data, aes(x = actual.grade, y = fitted.grade)) +
+  geom_point(alpha = 0.3, colour = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, colour = "firebrick", linetype = "dashed") +
+  geom_smooth(method = "loess", se = FALSE, colour = "orange", linewidth = 0.8) +
+  labs(
+    title = "Model 2 - actual vs. fitted grades",
+    x     = "Actual G1",
+    y     = "Fitted G1"
+  ) +
+  theme_minimal()
+```
+
+The residual diagnostics for model 2 indicate a similar pattern to model 1. The dispersion estimate close to 1 again indicates the variance assumption is reasonable.
+
+### Comparison: Model 1 and Model 2
+
+```{r model1-vs-model2-deviance-test}
+anova(model2.reduced, model1.full, test = "Chisq")
+```
+
+```{r model1-vs-model2-criteria-table}
+# Information criteria (AIC, BIC) and pseudo-R-squared penalise model complexity, allowing fair comparison even without a formal test. Lower AIC/BIC and higher pseudo R squared indicate a better fitting model.
+comparison.models.1.and.2 <- data.frame(
+  model.name          = c("Model 1 (all covariates)", "Model 2 (seven covariates)"),
+  residual.df         = c(df.residual(model1.full), df.residual(model2.reduced)),
+  residual.deviance   = round(c(model1.full$deviance, model2.reduced$deviance), 2),
+  AIC                 = round(c(AIC(model1.full), AIC(model2.reduced)), 2),
+  BIC                 = round(c(BIC(model1.full), BIC(model2.reduced)), 2),
+  pseudo.r.squared    = round(c(
+    1 - (model1.full$deviance    / model1.full$null.deviance),
+    1 - (model2.reduced$deviance / model2.reduced$null.deviance)
+  ), 4)
+)
+
+kable(comparison.models.1.and.2, caption = "Model 1 vs. Model 2: fit criteria")
+```
+
+The deviance test evaluates H0, which states that the predictors present in Model 1 but absent from Model 2 have no joint effect on G1. A large p-value (\> 0.05) indicates I cannot reject this null, meaning the dropped variables contribute no significant explanatory power beyond the seven predictors in model 2. The AIC and BIC are expected to favor model 2 because it achieves similar residual deviance with fewer parameters, and both criteria penalise complexity. The pseudo R squared values should be close, confirming that most of the explainable variance in G1 is captured by the seven-variable specification. In this sense, model 2 is the preferred model in terms of statistical significance.
+
+------------------------------------------------------------------------
+
+### Model 3: replace goout with Walc
+
+```{r model3-fit}
+# Walc measures weekend alcohol consumption (1-5 scale).
+# Like goout, it captures leisure-related behaviour, but focuses on alcohol use rather than general social outings.
+model3.walc <- glm(
+  G1 ~ sex + Fedu + studytime + failures + schoolsup + famsup + Walc,
+  data   = student.data,
+  family = gaussian(link = "identity")
+)
+summary(model3.walc)
+```
+
+### Comparison: Model 2 and Model 3
+
+```{r model2-vs-model3-correlation}
+# goout and Walc are likely correlated since both measure leisure behaviour.
+# First, it is needed to check Pearson correlation before comparing models. To explain, high correlation means the two variables capture largely the same variance in G1.
+correlation.goout.walc <- round(cor(student.data$goout, student.data$Walc), 3)
+cat("Pearson correlation between goout and Walc:", correlation.goout.walc, "\n")
+```
+
+```{r goout-walc-scatterplot, fig.height=3.5}
+# Scatter plot makes the relationship between goout and Walc observable, complementing the correlation coefficient with a view of its shape and spread.
+ggplot(student.data, aes(x = goout, y = Walc)) +
+  geom_jitter(width = 0.2, height = 0.2, alpha = 0.3, colour = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, colour = "firebrick", linewidth = 0.8) +
+  labs(
+    title = "Relationship between going out frequency and weekend alcohol consumption",
+    x     = "Going out with friends (goout, 1-5)",
+    y     = "Weekend alcohol consumption (Walc, 1-5)"
+  ) +
+  theme_minimal()
+```
+
+```{r model2-vs-model3-comparison-table}
+# Model 2 and 3 are NOT nested. Reason is neither contains all predictors of the other.
+# A nested deviance test is, hence, invalid. I proceed to compare using AIC, BIC and pseudo R squared, which are all suitable for non nested models fitted to the same outcome and sample size. Since both models have the same number of parameters, all three criteria give equivalent rankings here.
+comparison.models.2.and.3 <- data.frame(
+  model.name        = c("Model 2 (goout)", "Model 3 (Walc)"),
+  residual.df       = c(df.residual(model2.reduced), df.residual(model3.walc)),
+  residual.deviance = round(c(model2.reduced$deviance, model3.walc$deviance), 2),
+  AIC               = round(c(AIC(model2.reduced), AIC(model3.walc)), 2),
+  BIC               = round(c(BIC(model2.reduced), BIC(model3.walc)), 2),
+  pseudo.r.squared  = round(c(
+    1 - (model2.reduced$deviance / model2.reduced$null.deviance),
+    1 - (model3.walc$deviance    / model3.walc$null.deviance)
+  ), 4)
+)
+
+kable(comparison.models.2.and.3,
+      caption = "Non-nested comparison: Model 2 (goout) vs. Model 3 (Walc)")
+```
+
+Since model 2 and model 3 swap one predictor for another, they are not nested. Therefore, the deviance test does not apply. AIC , BIC and pseudo R squared are the correct tools. The scatter plot shows that goout and Walc are moderately positively correlated, claiming that students who go out more frequently also tend to drink more at weekends. As both variables capture overlapping aspects of leisure behavior, they explain similar variance in G1 and the difference in fit between the two models is expected to be small. The model with lower AIC and BIC is preferred. If the criteria are nearly identical, the choice should be guided by which construct is more directly relevant to the research question. For example, goout seems like a more general social activity measure, while Walc captures a specific behavior (alcohol consumption) that may have a more direct physiological link to academic performance.
