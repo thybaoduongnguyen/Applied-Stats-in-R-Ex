@@ -1,0 +1,370 @@
+---
+title: "Exercise 10: Principal Component Analysis"
+author: "Student name: Thy Duong"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width  = 6,
+  fig.height = 4,
+  out.width  = "85%"
+)
+```
+
+```{r packages}
+library(ggplot2)
+library(mclust)  # for EM/Gaussian Mixture clustering 
+```
+
+------------------------------------------------------------------------
+
+# Introduction
+
+The `iris` dataset, introduced by Fisher (1936), records four morphological measurements — sepal length, sepal width, petal length, and petal width, all in centimetres — for 150 flowers drawn equally from three species: *Iris setosa*, *I. versicolor*, and *I. virginica*. The Iris dataset is a classic choice for testing how well PCA handles real world measurement data.
+
+This report applies Principal Component Analysis (PCA) to reduce the four-dimensional measurement space to a lower dimensional representation, assess how much variation is retained and evaluate whether the resulting components support automatic classification via K-means clustering. We also investigate a more geometrically appropriate alternative classifier.
+
+------------------------------------------------------------------------
+
+# a) PCA 
+
+## Setup
+
+```{r data-prep}
+# iris is already a built in R dataset
+# Remove species, keep numeric variables only
+iris_num <- iris[, 1:4]
+```
+
+## Covariance-based PCA
+
+PCA using the empirical covariance matrix is performed with `prcomp(..., scale. = FALSE)`. This is appropriate when all variables are measured on the same scale and the differences in variance carry substantive meaning.
+
+```{r pca-cov}
+pca_cov <- prcomp(iris_num, center = TRUE, scale. = FALSE)
+
+# proportion of variance 
+var_cov <- summary(pca_cov)$importance
+prop_cov <- var_cov["Proportion of Variance", ]
+cum_cov  <- var_cov["Cumulative Proportion", ]
+```
+
+```{r loadings-cov-table, results='asis'}
+load_cov <- as.data.frame(pca_cov$rotation)
+load_cov$Variable <- rownames(load_cov)
+load_cov <- load_cov[, c("Variable", "PC1", "PC2", "PC3", "PC4")]
+knitr::kable(
+  load_cov,
+  digits  = 3,
+  caption = "PCA loadings (covariance matrix). Each column gives the weights of the original variables in the corresponding principal component.",
+  booktabs = TRUE
+)
+```
+
+```{r scree-cov, fig.cap="Scree plot for covariance-based PCA. The elbow after PC1 and the dominant first eigenvalue confirm that a single axis captures most variation."}
+eigenvalues_cov <- pca_cov$sdev^2
+scree_df <- data.frame(
+  PC  = factor(paste0("PC", 1:4), levels = paste0("PC", 1:4)),
+  Var = eigenvalues_cov,
+  Cum = cumsum(eigenvalues_cov) / sum(eigenvalues_cov)
+)
+
+p_scree <- ggplot(scree_df, aes(x = PC, y = Var, group = 1)) +
+  geom_col(fill = "#4472C4", alpha = 0.8, width = 0.5) +
+  geom_line(colour = "#ED7D31", linewidth = 0.8) +
+  geom_point(colour = "#ED7D31", size = 2.5) +
+  labs(x = "Principal Component", y = "Eigenvalue",
+       title = "Scree Plot (Covariance Matrix)") +
+  theme_classic(base_size = 11)
+p_scree
+```
+
+The first two principal components together explain **`r round(cum_cov["PC2"] * 100, 1)`%** of the total variance (PC1: `r round(prop_cov["PC1"]*100,1)`%, PC2: `r round(prop_cov["PC2"]*100,1)`%).
+
+**Interpretation of the first two PCs (covariance matrix):**
+
+-   **PC1** has large positive loadings on Petal.Length and Petal.Width, and a moderate positive loading on Sepal.Length, while Sepal.Width contributes negatively. PC1 can be interpreted as an overall *petal size / flower size* axis, which means that flowers with larger petals score high on PC1, regardless of sepal width.
+
+-   **PC2** is dominated by Sepal.Width (positive) and by a contrast with Petal.Length and Petal.Width (negative). PC2 captures variation in *sepal shape*, distinguishing flowers with broad sepals from those with long, prominent petals.
+
+## Correlation-based PCA
+
+Using the empirical correlation matrix (`scale. = TRUE`) standardizes each variable to unit variance so that differences in measurement scale do not inflate certain variables' contribution to the components.
+
+```{r pca-cor}
+pca_cor <- prcomp(iris_num, center = TRUE, scale. = TRUE)
+var_cor  <- summary(pca_cor)$importance
+prop_cor <- var_cor["Proportion of Variance", ]
+cum_cor  <- var_cor["Cumulative Proportion", ]
+```
+
+```{r loadings-cor-table, results='asis'}
+load_cor <- as.data.frame(pca_cor$rotation)
+load_cor$Variable <- rownames(load_cor)
+load_cor <- load_cor[, c("Variable", "PC1", "PC2", "PC3", "PC4")]
+knitr::kable(
+  load_cor,
+  digits   = 3,
+  caption  = "PCA loadings (correlation matrix).",
+  booktabs = TRUE
+)
+```
+
+The first two correlation-based PCs explain **`r round(cum_cor["PC2"]*100,1)`%** of total variance (PC1: `r round(prop_cor["PC1"]*100,1)`%, PC2: `r round(prop_cor["PC2"]*100,1)`%).
+
+**Are the results similar?** The loading patterns are comparable. PC1 reflects overall flower size, particularly petal dimensions, and PC2 reflects sepal width variation. However, standardization reduces the dominance of Petal.Length, which has the largest variance in the original data, so the proportion of variance explained by PC1 is slightly lower under the correlation matrix. The correlation-based approach is more suitable when comparing variables measured on different scales. As all four variables share the same unit (cm), the covariance-based approach is arguably more informative here.
+
+------------------------------------------------------------------------
+
+# b) 
+
+```{r pca-mm}
+iris_mm <- iris_num
+iris_mm$Petal.Length <- iris_mm$Petal.Length * 10  # cm → mm
+
+pca_mm  <- prcomp(iris_mm, center = TRUE, scale. = FALSE)
+var_mm  <- summary(pca_mm)$importance
+prop_mm <- var_mm["Proportion of Variance", ]
+cum_mm  <- var_mm["Cumulative Proportion", ]
+```
+
+When Petal.Length is remeasured in millimeters (multiplied by 10), its variance increases by factor of 100, causing the covariance-based PCA to become dominated by that single variable. The first PC now explains **`r round(prop_mm["PC1"]*100,1)`%** of variance (compared to `r round(prop_cov["PC1"]*100,1)`% before) and its loading is almost entirely on Petal.Length.
+
+This demonstrates the sensitivity that **covariance-based PCA is not scale-invariant**. The principal components change both quantitatively and in their interpretation because one variable was rescaled. On the contrary, the correlation-based PCA is immune to this, because standardization removes the influence of measurement units. This is why the correlation matrix is the default choice when variables have different scales or units.
+
+------------------------------------------------------------------------
+
+# c) First Two PCs by Species
+
+```{r biplot-species, fig.cap="Scatter plot of the first two principal components (covariance matrix), coloured by iris species. Setosa is clearly separated from the other two species along PC1. Versicolor and virginica overlap slightly but are well differentiated.", fig.width=6.5, fig.height=4.5}
+scores_cov <- as.data.frame(pca_cov$x)
+scores_cov$Species <- iris$Species
+
+ggplot(scores_cov, aes(x = PC1, y = PC2, colour = Species, shape = Species)) +
+  geom_point(alpha = 0.8, size = 2) +
+  scale_colour_manual(values = c("#E63946", "#457B9D", "#2A9D8F")) +
+  labs(
+    x     = sprintf("PC1 (%.1f%% variance)", prop_cov["PC1"] * 100),
+    y     = sprintf("PC2 (%.1f%% variance)", prop_cov["PC2"] * 100),
+    title = "PCA Score Plot by Species (Covariance Matrix)",
+    colour = "Species", shape = "Species"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(legend.position = "bottom")
+```
+
+**Observations:** 3 clear groupings emerge. *Setosa* is completely isolated at low PC1 values, consistent with its characteristically small petals. *Versicolor* and *virginica* overlap only slightly along PC1, yet are better distinguished along PC2. This structure suggests that even 2 dimensions are sufficient to capture most of the interspecies variation.
+
+**Is the 2D representation adequate?** Since the first two PCs capture `r round(cum_cov["PC2"]*100,1)`% of the total variance, the 2D plot retains most of the information from the original 4D data. The remaining `r round((1-cum_cov["PC2"])*100,1)`%  spread across PC3 and PC4 is unlikely to change the overall picture. We can therefore trust the 2D plot as a good approximation of how the observations relate to each other in the full four-dimensional space
+
+------------------------------------------------------------------------
+
+# d) Parallel Analysis
+
+```{r parallel-analysis, fig.cap="Parallel analysis: observed eigenvalues (blue) versus mean simulated eigenvalues from 1,000 random datasets (red dashed). Components above the red line should be retained.", fig.width=6, fig.height=4}
+set.seed(42)
+n_sim <- 1000
+n     <- nrow(iris_num)
+p     <- ncol(iris_num)
+
+# Simulate eigenvalues from uncorrelated data of same dimension
+sim_eigenvalues <- matrix(NA, nrow = n_sim, ncol = p)
+for (i in seq_len(n_sim)) {
+  rand_data           <- matrix(rnorm(n * p), nrow = n, ncol = p)
+  sim_eigenvalues[i,] <- prcomp(rand_data, center = TRUE, scale. = FALSE)$sdev^2
+}
+
+sim_mean <- colMeans(sim_eigenvalues)
+obs_eig  <- pca_cov$sdev^2
+
+pa_df <- data.frame(
+  PC        = 1:p,
+  Observed  = obs_eig,
+  Simulated = sim_mean
+)
+
+ggplot(pa_df, aes(x = PC)) +
+  geom_line(aes(y = Observed,   colour = "Data"),      linewidth = 0.8) +
+  geom_point(aes(y = Observed,  colour = "Data"),      shape = 16, size = 3) +
+  geom_line(aes(y = Simulated,  colour = "Simulated"), linewidth = 0.8, linetype = "dashed") +
+  geom_point(aes(y = Simulated, colour = "Simulated"), shape = 17, size = 3) +
+  scale_colour_manual(name   = NULL,
+                      values = c("Data" = "#4472C4", "Simulated" = "#C00000"),
+                      labels = c("Data", "Simulated data from parallel analysis")) +
+  scale_x_continuous(breaks = 1:p, labels = paste0("PC", 1:p)) +
+  labs(x = "Component", y = "Eigenvalue",
+       title = "Parallel Analysis (Covariance Matrix)") +
+  theme_classic(base_size = 11) +
+  theme(legend.position = c(0.68, 0.85))
+```
+
+```{r parallel-result}
+n_keep <- sum(obs_eig > sim_mean)
+```
+
+The parallel analysis suggests retaining `r n_keep` principal component(s). Only PC1 has an observed eigenvalue substantially exceeding the simulated baseline, confirming the dominant role of a single size axis. PC2's eigenvalue is above the simulated value but much closer, suggesting it captures real but modest additional structure (primarily sepal width variation).
+
+------------------------------------------------------------------------
+
+# e) K-means Clustering on First Two PCs
+
+K-means clustering with $K = 3$ is applied to the scores on the first two principal components from a). Because K-means is sensitive to starting values, I run the algorithm with 200 random initializations and select the solution minimizing within cluster sum of squares.
+
+```{r kmeans}
+set.seed(42)
+scores2 <- pca_cov$x[, 1:2]
+
+# many random starts to find the global optimum
+km <- kmeans(scores2, centers = 3, nstart = 200)
+
+# K-means assigns clusters the labels 1, 2, 3 arbitrarily. There is no guarantee that cluster 1 corresponds to setosa, cluster 2 to versicolor, and so on.
+# Therefore, I try all 6 possible ways to map cluster labels to species labels and keep the mapping that produces the fewest misclassifications.
+species_int <- as.integer(iris$Species)  # setosa=1, versicolor=2, virginica=3
+
+# 6 permutations 
+perms <- list(c(1,2,3), c(1,3,2), c(2,1,3), c(2,3,1), c(3,1,2), c(3,2,1))
+
+errors <- sapply(perms, function(p) {
+  relabelled <- p[km$cluster]          # remap cluster ids according to permutation 
+  sum(relabelled != species_int)       # count mismatches with true species
+})
+
+best_perm     <- perms[[which.min(errors)]]
+km_relabelled <- best_perm[km$cluster]
+
+class_error_2pc <- min(errors) / nrow(iris)
+```
+
+```{r kmeans-plot, fig.cap="K-means clustering result (K=3) on the first two PCs. Cluster boundaries are shown by colour fill and true species are indicated by point shape.", fig.width=6.5, fig.height=4.5}
+plot_df <- data.frame(
+  PC1        = scores2[,1],
+  PC2        = scores2[,2],
+  Cluster    = factor(km_relabelled, labels = c("Setosa", "Versicolor", "Virginica")),
+  TrueSpecies = iris$Species
+)
+
+ggplot(plot_df, aes(x = PC1, y = PC2)) +
+  geom_point(aes(colour = Cluster, shape = TrueSpecies), size = 2.2, alpha = 0.9) +
+  scale_colour_manual(values = c("#E63946", "#457B9D", "#2A9D8F"),
+                      name = "K-means cluster") +
+  scale_shape_manual(values = c(16, 17, 15), name = "True species") +
+  labs(
+    x     = sprintf("PC1 (%.1f%%)", prop_cov["PC1"]*100),
+    y     = sprintf("PC2 (%.1f%%)", prop_cov["PC2"]*100),
+    title = "K-means (K=3) on First Two PCs"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(legend.position = "bottom",
+        legend.box = "vertical")
+```
+
+```{r kmeans-full-data}
+set.seed(42)
+km_full  <- kmeans(iris_num, centers = 3, nstart = 200)
+errors_full <- sapply(perms, function(p) {
+  relabelled <- p[km_full$cluster]
+  sum(relabelled != species_int)
+})
+class_error_full <- min(errors_full) / nrow(iris)
+```
+
+**Classification error on 2 PCs:** `r round(class_error_2pc * 100, 1)`% (`r min(errors)` misclassified observations).
+
+**Classification error on full 4-variable dataset:** `r round(class_error_full * 100, 1)`% (`r min(errors_full)` misclassified observations).
+
+The clusters align closely with the true species. At first sight, *Setosa* is clearly separated. The small number of errors arises in the *versicolor–virginica* boundary, consistent with their overlap in the score plot. Using the full four-dimensional (4D) dataset yields a marginally lower error rate.
+
+------------------------------------------------------------------------
+
+# f) Shape of K-means and a Better Alternative
+
+## Limitations of K-means
+
+K-means works by assigning each point to its nearest cluster center, which means it assumes clusters are round and equal in size. Looking at Figure 4, however, versicolor and virginica form stretched clouds along the PC1 axis, not round blobs. Because K-means cannot handle this shape, it ends up misclassifying some points at the edges of these groups.
+
+## Gaussian Mixture Model Clustering
+
+From the slides of lecture 9 (p. 41–45), Gaussian Mixture Models (GMM) is introduced as a better suited alternative. The idea is as follows. Instead of describing each cluster only by its center point, GMM also learns the shape and orientation of each cluster. This means clusters can be stretched or differently sized. producing closer to what we actually see in the data. Rather than forcing to assign each point to one cluster, GMM gives each point a probability of belonging to each cluster and updates the cluster shapes accordingly until the solution converges.
+
+I fit the model using Mclust() from the mclust package, which automatically picks the best cluster shape via BIC.
+
+```{r gmm}
+set.seed(42)
+# Mclust() is to fit Gaussian mixture model via EM selects covariance structure by BIC
+# G = 3 fixes the number of components to match the known number of species
+gmm <- Mclust(scores2, G = 3)
+
+# Relabel GMM clusters to best match true species (same permutation logic as K-means)
+errors_gmm     <- sapply(perms, function(p) sum(p[gmm$classification] != species_int))
+gmm_relabelled <- perms[[which.min(errors_gmm)]][gmm$classification]
+class_error_gmm <- min(errors_gmm) / nrow(iris)
+```
+
+```{r gmm-plot, fig.cap="Gaussian Mixture Model clustering (K=3) on the first two PCs.", fig.width=6.5, fig.height=4.5}
+plot_df$GMM_Cluster <- factor(gmm_relabelled,
+                               labels = c("Setosa", "Versicolor", "Virginica"))
+
+ggplot(plot_df, aes(x = PC1, y = PC2)) +
+  geom_point(aes(colour = GMM_Cluster, shape = TrueSpecies), size = 2.2, alpha = 0.9) +
+  scale_colour_manual(values = c("#E63946", "#457B9D", "#2A9D8F"),
+                      name = "GMM cluster") +
+  scale_shape_manual(values = c(16, 17, 15), name = "True species") +
+  labs(
+    x     = sprintf("PC1 (%.1f%%)", prop_cov["PC1"] * 100),
+    y     = sprintf("PC2 (%.1f%%)", prop_cov["PC2"] * 100),
+    title = "Gaussian Mixture Model (K=3) on First Two PCs"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(legend.position = "bottom", legend.box = "vertical")
+```
+
+**GMM classification error:** `r round(class_error_gmm * 100, 1)`% (`r min(errors_gmm)` misclassified observations).
+
+K-means assumes clusters are round, but the Iris data for Versicolor and Virginica is actually quite 'stretched' out. I noticed this in the score plot, so I tried a Gaussian Mixture Model (GMM) instead. As a result, the model automatically confirms that these clusters differ in size, shape and direction, none of which K-means can capture. This also tells that GMM is simply a more flexible version of K-means that works better when clusters are not round.
+
+------------------------------------------------------------------------
+
+# Summary
+
+Table 3 compares the key results across all analyses.
+
+```{r summary-table, results='asis'}
+summary_df <- data.frame(
+  Method = c(
+    "PCA (Covariance), PC1+PC2",
+    "PCA (Correlation), PC1+PC2",
+    "K-means on 2 PCs",
+    "K-means on full data",
+    "GMM (EM) on 2 PCs"
+  ),
+  Result = c(
+    sprintf("%.1f%% variance explained", cum_cov["PC2"] * 100),
+    sprintf("%.1f%% variance explained", cum_cor["PC2"] * 100),
+    sprintf("%.1f%% classification error", class_error_2pc * 100),
+    sprintf("%.1f%% classification error", class_error_full * 100),
+    sprintf("%.1f%% classification error", class_error_gmm * 100)
+  )
+)
+knitr::kable(summary_df, col.names = c("Method", "Result"),
+             caption = "Summary of key results across all analyses.",
+             booktabs = TRUE)
+```
+
+The PCA shows that most variation in the iris data comes down to 1 single axis, petal size. But, plotting just the first two PCs is enough to clearly separate all three species. K-means clustering already performs well on this 2D representation and using all four original variables instead barely improves the result. The Gaussian Mixture Model does better because its flexible cluster shapes fit the stretched groups of versicolor and virginica more naturally than the round clusters that K-means assumes.
+
+------------------------------------------------------------------------
+
+# References
+
+Fisher, R. A. (1936). The use of multiple measurements in taxonomic problems. *Annals of Eugenics*, 7(II), 179–188.
+
+Horn, J. L. (1965). A rationale and test for the number of factors in factor analysis. *Psychometrika*, 30, 179–185.
+
+Scrucca, L., Fop, M., Murphy, T. B., & Raftery, A. E. (2016). mclust 5: Clustering, classification and density estimation using Gaussian finite mixture models. *The R Journal*, 8(1), 289–317.
