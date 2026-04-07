@@ -1,0 +1,577 @@
+---
+title: "Exercise 6: Logistic regression"
+author: "Student name: Thy Duong"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = FALSE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.align  = "center",
+  fig.width  = 8,
+  fig.height = 5,
+  out.width  = "100%"
+)
+# load libraries
+library(tidyverse)
+library(knitr)
+```
+
+```{r load-data, include=FALSE}
+# unzipped and uploaded on my github repo
+url <- "https://raw.githubusercontent.com/thybaoduongnguyen/Applied-Stats-in-R-Ex/main/Exercise6/transfusion.data"
+raw <- read.csv(url, header = FALSE, stringsAsFactors = FALSE)
+colnames(raw) <- c("recency", "frequency", "amount", "time", "donation")
+blood <- raw[-1, ] %>%
+  mutate(across(everything(), as.numeric),
+         donation = factor(donation, levels = c(0, 1)))
+
+# remove first row as it contains the original headers as data
+# convert all columns to numeric and assign 'donation' 0 and 1
+n       <- nrow(blood)
+n_pos   <- sum(blood$donation == 1)
+n_neg   <- sum(blood$donation == 0)
+pct_pos <- round(100 * n_pos / n, 1)
+```
+
+```{r class-distribution}
+# to have an overview of donors and non donors
+blood %>%
+  count(donation) %>%
+  mutate(
+    pct      = round(100 * n / sum(n), 1),
+    donation = c("Did not donate", "Donated")
+  ) %>%
+  kable(
+    col.names = c("Donation Status", "Count", "%"),
+    caption   = "Table 0: Class distribution of the donation variable."
+  )
+```
+
+---
+
+## Problem Description
+
+The given dataset comes from the Blood Transfusion Service Center in Hsin-Chu City in Taiwan, available on UCI Machine Learning Repository. It was collected from a mobile blood donation vehicle and each observation corresponds to a single donor. The dataset contains `r n` observations with 5 variables: Recency (months since last donation), Frequency (total donations), Amount (total blood donated in c.c.), Time (months since first donation) and Donation (binary response: 1 = donated, 0 = did not donate).
+As shown in Table 0, the classes are imbalanced — `r n_pos` donors (`r pct_pos`%) donated versus `r n_neg` (`r round(100 - pct_pos, 1)`%) who did not. As the response variable is binary, logistic regression is the best model choice. To explain, it models the probability of donating while ensuring predictions remain bounded between 0 and 1.
+
+---
+
+## Methods
+
+### Generalised Linear Models for Binary Responses
+
+When the response variable is binary (0/1), ordinary linear regression is not appropriate — it can produce predicted probabilities below 0 or above 1, which doesn't make sense. A **Generalised Linear Model (GLM)** handles this properly.
+
+For a binary outcome $Y_i \in \{0, 1\}$, we assume:
+
+$$Y_i \sim \text{Bernoulli}(\pi_i), \quad g(\pi_i) = \mathbf{x}_i^\top \boldsymbol{\beta}$$
+
+where $\pi_i = P(Y_i = 1 \mid \mathbf{x}_i)$ is the probability of donating and $g(\cdot)$ is a **link function** that maps probabilities from (0, 1) onto the full real line.
+
+The three link functions used in this report are:
+
+| Link | Name | $g(\pi)$ | Inverse |
+|------|------|-----------|---------|
+| `logit` | Canonical | $\log\!\left(\frac{\pi}{1-\pi}\right)$ | $\frac{e^\eta}{1+e^\eta}$ |
+| `probit` | Probit | $\Phi^{-1}(\pi)$ | $\Phi(\eta)$ |
+| `cloglog` | Complementary log-log | $\log(-\log(1-\pi))$ | $1 - e^{-e^\eta}$ |
+
+The **logit** link is the default (canonical) choice for binary data. Its coefficients are easy to interpret as **log-odds ratios**. All models are fitted using `glm()` in R.
+
+### Model Evaluation
+
+Models are compared using the **Akaike Information Criterion** (AIC $= -2\ell + 2p$, lower is better) and **residual deviance**. For prediction, we report the **classification error**:
+
+$$\text{CE} = \frac{1}{n_{\text{test}}} \sum_{i=1}^{n_{\text{test}}} |y_i^{\text{test}} - \hat{y}_i^{\text{test}}|, \quad \hat{y}_i = \mathbf{1}[\hat{\pi}_i \geq 0.5]$$
+
+---
+
+# Results
+
+## a) Single-Covariate Models — Frequency vs. Amount
+
+Fit a generalised linear model with the binary response donation and covariate frequency using the canonical link function.
+Fit the same model replacing the covariate by amount.
+Compare the two models and comment on the results.
+
+```{r eda-density, fig.cap="Figure 1. Distributions of the 4 predictors by donation status (blue = donated, red = did not donate)."}
+
+theme_rep <- theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.text       = element_text(face = "bold"),
+    plot.title       = element_text(face = "bold", size = 13),
+    plot.subtitle    = element_text(colour = "grey40"),
+    legend.position  = "bottom"
+  )
+
+cols <- c("1" = "#2196F3", "0" = "#F44336")
+
+blood %>%
+  pivot_longer(cols = c(recency, frequency, amount, time),
+               names_to = "variable", values_to = "value") %>%
+  mutate(variable = factor(
+    variable,
+    levels = c("recency", "frequency", "amount", "time"),
+    labels = c("Recency (months)", "Frequency (# donations)",
+               "Amount (c.c.)", "Time (months since first donation)")
+  )) %>%
+  ggplot(aes(x = value, fill = donation)) +
+  geom_density(alpha = 0.45, colour = NA) +
+  scale_fill_manual(
+    values = cols,
+    labels = c("0" = "Did not donate", "1" = "Donated"),
+    name   = ""
+  ) +
+  facet_wrap(~variable, scales = "free", ncol = 2) +
+  labs(x = NULL, y = "Density",
+       title = "Figure 1: Predictor distributions by donation status") +
+  theme_rep
+```
+
+Figure 1 reveals that there has been considerable difference between donors and non donors in **recency** (donors gave blood more recently) and **frequency** / **amount** (donors have given more in total). Donors are strongly characterised by low recency as shown by the blue distribution concentrating near zero. For frequency and amount, donors tend to have higher values but with considerable overlap between the two groups. Interestingly, time shows a reverse observation that non donors have been in the system longer on average, suggesting that long standing but currently inactive donors are less likely to donate again.
+
+The frequency and amount panels look identical in terms of shape. This is a hint that they have the same information carried along, which I confirm below.
+
+```{r corr-heatmap, fig.cap="Figure 2. Correlation heatmap of the four predictors. The near-perfect correlation between frequency and amount (r = 1.00) confirms that both variables carry identical information and should not be included in the same model."}
+
+# correlation matrix
+blood %>%
+  select(recency, frequency, amount, time) %>%
+  { as_tibble(cor(.), rownames = "Var1") } %>%
+  pivot_longer(-Var1, names_to = "Var2", values_to = "r") %>%
+  mutate(r = round(r, 3)) %>%
+  ggplot(aes(x = Var1, y = Var2, fill = r)) +
+  geom_tile(colour = "white", linewidth = 0.8) +
+  geom_text(aes(label = r), size = 4, fontface = "bold") +
+  scale_fill_gradient2(
+    low      = "#F44336", mid = "white", high = "#2196F3",
+    midpoint = 0, limits = c(-1, 1), name = "Pearson r"
+  ) +
+  labs(title = "Figure 2: Correlation Matrix", x = NULL, y = NULL) +
+  theme_rep +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+Figure 2 confirms what Figure 1 suggested that `frequency` and `amount` are perfectly correlated (r = 1.00). That's because every donation is exactly 250 c.c., so `amount = 250 × frequency` as always. They are literally the same variable expressed in different units. This means we should **not use both in the same model**. There, we must pick only one.
+
+`time` is moderately correlated with frequency and amount (r ≈ 0.64), which makes sense as donors who have been in the system longer have had more time to donate. The other correlations are small enough not to worry about.
+
+---
+
+```{r part-a-fit, include=FALSE}
+# convert to 0/1 integer to use in glm()
+blood_num <- blood %>% mutate(donation = as.integer(donation) - 1)
+
+# fit 2 logistic regression models, one with frequency, one with amount
+m_freq   <- glm(donation ~ frequency, data = blood_num, family = binomial(link = "logit"))
+m_amount <- glm(donation ~ amount,    data = blood_num, family = binomial(link = "logit"))
+
+# helper function for extraction
+extract_coef <- function(m, cov_name) {
+  cf <- coef(summary(m))
+  tibble(
+    Covariate  = cov_name,
+    Intercept  = round(cf[1, 1], 4),
+    Slope      = round(cf[2, 1], 4),
+    SE         = round(cf[2, 2], 4),
+    `z-value`  = round(cf[2, 3], 3),
+    `p-value`  = signif(cf[2, 4], 4),
+    AIC        = round(AIC(m), 2),
+    Deviance   = round(deviance(m), 2)
+  )
+}
+
+# summary table
+tab_a <- bind_rows(
+  extract_coef(m_freq,   "frequency"),
+  extract_coef(m_amount, "amount")
+)
+```
+
+We fit 2 separate logistic regression models using `frequency` and `amount` as the sole covariate, respectively. The canonical logit link is used throughout Part (a). Results are presented in Table 1.
+
+```{r part-a-table}
+tab_a %>%
+  kable(caption = "Table 1: Estimated coefficients and model fit for the frequency and amount logistic regression models.")
+```
+
+Both models have positive slope, showing that donors with a higher donation history are more likely to donate again. Moreover, AIC and residual deviance are **virtually identical** across the two models. This is a direct consequence of the perfect collinearity visible in Figure 2. As every donation is exactly 250 c.c., the relationship amount = 250 × frequency holds exactly, so $\hat{\beta}_{\text{amount}} = \hat{\beta}_{\text{frequency}} / 250$.
+
+```{r part-a-plot, fig.cap="Figure 3. Fitted logistic regression curves for the frequency model (left) and the amount model (right). The shapes are identical up to a rescaling of the x-axis, confirming that the two models are statistically equivalent."}
+
+# predicted probabilities
+new_freq <- tibble(frequency = seq(0, 50, length.out = 300)) %>%
+  mutate(prob = predict(m_freq, newdata = ., type = "response"),
+         covariate = "Frequency (# donations)", x = frequency)
+new_amount <- tibble(amount = seq(0, 12500, length.out = 300)) %>%
+  mutate(prob = predict(m_amount, newdata = ., type = "response"),
+         covariate = "Amount (c.c.)", x = amount)
+
+# predicted curves
+pred_curves <- bind_rows(
+  new_freq   %>% select(x, prob, covariate),
+  new_amount %>% select(x, prob, covariate)
+)
+
+# jitter is needed. Without it, there will be 1 dot representing many observations.
+jitter_df <- bind_rows(
+  blood_num %>% transmute(x = frequency, y = donation, covariate = "Frequency (# donations)"),
+  blood_num %>% transmute(x = amount,    y = donation, covariate = "Amount (c.c.)")
+)
+
+ggplot() +
+  geom_jitter(data = jitter_df,
+              aes(x = x, y = y, colour = factor(y)),
+              height = 0.03, alpha = 0.3, size = 0.7) +
+  geom_line(data = pred_curves,
+            aes(x = x, y = prob),
+            colour = "#1565C0", linewidth = 1.1) +
+  scale_colour_manual(values = cols, guide = "none") +
+  facet_wrap(~covariate, scales = "free_x") +
+  labs(x = NULL, y = "P(Donation = 1)",
+       title = "Figure 3: Fitted logistic curves: frequency versus amount") +
+  theme_rep
+```
+
+**Conclusion:**
+Both models give the same AIC and residual deviance (Table 1). Figure 3 explains that 2 S curves are identical in shape, only that the x-axis is just scaled differently. This is exactly what we would expect when one variable is a fixed multiple of the other. The slope for `amount` is simply the slope for `frequency` divided by 250.
+
+So it doesn't matter which one we use as they will give the same predictions. Going forward, we keep `frequency` because it's easier to interpret (number of donations is more intuitive than total c.c.).
+
+---
+
+## b) Three Link Functions — Recency Model
+
+Fit the GLM model with the response donation and covariate recency using all link functions available in the glm function. Compare obtained estimators and comment on the differences.
+
+```{r part-b-fit, include=FALSE}
+# fit recency - donation model using 3 link functions
+m_logit   <- glm(donation ~ recency, data = blood_num, family = binomial(link = "logit"))
+m_probit  <- glm(donation ~ recency, data = blood_num, family = binomial(link = "probit"))
+m_cloglog <- glm(donation ~ recency, data = blood_num, family = binomial(link = "cloglog"))
+
+# helper function
+extract_link <- function(m, link) {
+  cf <- coef(summary(m))
+  tibble(
+    Link          = link,
+    Intercept     = round(cf[1, 1], 4),
+    `β (Recency)` = round(cf[2, 1], 4),
+    SE            = round(cf[2, 2], 4),
+    `z-value`     = round(cf[2, 3], 3),
+    AIC           = round(AIC(m), 2),
+    Deviance      = round(deviance(m), 2)
+  )
+}
+
+tab_b <- bind_rows(
+  extract_link(m_logit,   "Logit"),
+  extract_link(m_probit,  "Probit"),
+  extract_link(m_cloglog, "Cloglog")
+)
+```
+
+Here I fit the same model (`donation ~ recency`) 3 times, each with a different link function.
+
+```{r part-b-table}
+# show comparison
+tab_b %>%
+  kable(caption = "Table 2. Estimated coefficients and model fit for the recency model under three link functions.")
+```
+
+```{r part-b-plot, fig.cap="Figure 4. Fitted probability curves for the three link functions. All three agree closely in the central range of recency but diverge at the tails. The complementary log-log (cloglog) curve is notably asymmetric, declining more steeply at low recency values."}
+
+# predict fitted probabilities for each link function
+new_rec <- tibble(recency = seq(0, 74, length.out = 300)) %>%
+  mutate(
+    Logit   = predict(m_logit,   newdata = ., type = "response"),
+    Probit  = predict(m_probit,  newdata = ., type = "response"),
+    Cloglog = predict(m_cloglog, newdata = ., type = "response")
+  ) %>%
+  pivot_longer(cols = c(Logit, Probit, Cloglog),
+               names_to = "Link", values_to = "prob") %>%
+  mutate(Link = factor(Link, levels = c("Logit", "Probit", "Cloglog")))
+
+link_colours <- c("Logit" = "#1565C0", "Probit" = "#2E7D32", "Cloglog" = "#C62828")
+
+point_colours <- c("0" = "#F44336", "1" = "#2196F3")
+all_colours   <- c(point_colours, link_colours)
+
+jitter_link <- blood_num %>%
+  mutate(colour_id = as.character(donation))
+
+ggplot() +
+  # jitter to avoid 1 point representing many observations as explained above
+  geom_jitter(data  = jitter_link,
+              aes(x = recency, y = donation, colour = colour_id),
+              height = 0.03, alpha = 0.25, size = 0.7) +
+  geom_line(data = new_rec,
+            aes(x = recency, y = prob, colour = Link),
+            linewidth = 1.1) +
+  scale_colour_manual(
+    values = all_colours,
+    breaks = c("Logit", "Probit", "Cloglog"),  # only show link functions in legend
+    name   = "Link function"
+  ) +
+  labs(title = "Figure 4: Recency model: the comparison of 3 link functions",
+       x = "Recency (months since last donation)",
+       y = "P(Donation = 1)") +
+  theme_rep +
+  theme(legend.position = "right")
+```
+
+Table 2 shows that all 3 link functions have similar AIC values, indicating comparable fit to the data. The slope estimates look different in size, but that's because the logit and probit scales are different (logit coefficients are about 1.6× larger than probit ones by convention).
+
+Figure 4 shows some interesting aspects. In the middle range of recency, all 3 curves nearly overlap. But at the extremes, cloglog (red) behaves differently. In fact, it drops off faster for people who gave very recently. This comes from the mathematical shape of the cloglog function. In practice, as the AICs are similar, we can't say one is clearly better than the others. We'll stick with logit for the rest of the analysis since it's the standard and easiest to interpret.
+
+---
+
+## c) Train/Test Evaluation and Feature Engineering
+
+```{r train-test-split, include=FALSE}
+# set seed as required in c)
+set.seed(1122)
+
+# Randomly select 374 rows (50/50 test and training split)
+blood_num <- blood %>% mutate(donation = as.integer(donation) - 1)
+train_idx <- sample(seq_len(nrow(blood_num)), 374)
+train     <- blood_num[ train_idx, ]
+test      <- blood_num[-train_idx, ]
+```
+
+We split the data into a **training set** (n = 374) and a **test set** (n = `r nrow(test)`), using `set.seed(1122)` so the results are reproducible.
+
+```{r split-balance-plot, fig.cap="Figure 5. Class balance in the training and test sets. The proportion of donors (~24%) is consistent across both partitions, confirming a representative split."}
+
+# Check that the class balance is similar in both sets
+bind_rows(
+  train %>% count(donation) %>% mutate(Set = "Training"),
+  test  %>% count(donation) %>% mutate(Set = "Test")
+) %>%
+  group_by(Set) %>%
+  mutate(
+    pct      = n / sum(n),
+    donation = factor(donation, labels = c("Did not donate", "Donated"))
+  ) %>%
+  ggplot(aes(x = Set, y = pct, fill = donation)) +
+  geom_col(width = 0.45) +
+  geom_text(aes(label = scales::percent(pct, accuracy = 0.1)),
+            position = position_stack(vjust = 0.5),
+            colour = "white", fontface = "bold", size = 4) +
+  scale_fill_manual(
+    values = c("Did not donate" = "#F44336", "Donated" = "#2196F3"),
+    name   = ""
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Figure 5: Class balance in training and test sets",
+       x = NULL, y = "Proportion") +
+  theme_rep
+```
+
+Figure 5 shows that the donor proportion (~24%) is consistent across both sets, which means our split is good to go.
+
+### Baseline Model
+
+```{r baseline-model, include=FALSE}
+# fit the baseline model using the three non-collinear predictors
+# note: amount is excluded because it's perfectly collinear with frequency
+m_base    <- glm(donation ~ recency + frequency + time,
+                 data   = train,
+                 family = binomial(link = "logit"))
+# test set
+pred_base <- predict(m_base, newdata = test, type = "response")
+# probabilities to class labels using 0.5 threshold
+yhat_base <- as.integer(pred_base >= 0.5)
+ce_base   <- mean(abs(test$donation - yhat_base))
+```
+
+We fit a logistic model on the training set with **recency**, **frequency**, and **time** as predictors. It is worth noting that `amount` is excluded due to perfect collinearity with `frequency`. Table 3 below shows the result.
+
+```{r baseline-coef-table}
+coef(summary(m_base)) %>%
+  as_tibble(rownames = "Term") %>%
+  rename(Estimate = Estimate, SE = `Std. Error`,
+         `z-value` = `z value`, `p-value` = `Pr(>|z|)`) %>%
+  mutate(
+    `Odds Ratio` = round(exp(Estimate), 4),
+    Estimate     = round(Estimate, 4),
+    SE           = round(SE, 4),
+    `z-value`    = round(`z-value`, 3),
+    `p-value`    = signif(`p-value`, 4)
+  ) %>%
+  select(Term, `Odds Ratio`, Estimate, SE, `z-value`, `p-value`) %>%
+  kable(caption = "Table 3. Odds ratios and estimated coefficients for the baseline logistic regression model (training data).")
+```
+
+The baseline model achieves a **classification error of $\text{CE}_{\text{base}} = `r round(ce_base, 4)`$** on the test set.
+
+All three predictors are statistically significant. The direction of each effect is correct:
+
+- **Recency** has an odds ratio < 1. Meaning: the longer ago someone last donated, the less likely they are to donate again.
+- **Frequency** has an odds ratio > 1. Meaning: people who donate more often are more likely to donate again.
+- **Time** has a small negative effect. Meaning: someone who's been in the system a very long time but hasn't donated recently is slightly less likely to give.
+
+### Extending the Model
+
+```{r extended-model, include=FALSE}
+# Approach: Add 3 new variables to improve prediction.
+# log_recency, freq_time, and recency_ratio are added one at a time to track each variable's incremental contribution toward the 0.20 target.
+
+blood_fe <- blood_num %>%
+  mutate(
+    log_recency   = log(recency + 1),
+    freq_time     = frequency / (time + 1),
+    recency_ratio = recency / (time + 1)
+  )
+
+train_fe <- blood_fe[ train_idx, ]
+test_fe  <- blood_fe[-train_idx, ]
+
+# Model 1: + log_recency
+m_ext1    <- glm(donation ~ recency + frequency + time + log_recency,
+                 data = train_fe, family = binomial(link = "logit"))
+pred_ext1 <- predict(m_ext1, newdata = test_fe, type = "response")
+yhat_ext1 <- as.integer(pred_ext1 >= 0.5)
+ce_ext1   <- mean(abs(test_fe$donation - yhat_ext1))
+
+# Model 2: + freq_time (kept for comparison only — dropped from final model)
+m_ext2    <- glm(donation ~ recency + frequency + time + log_recency + freq_time,
+                 data = train_fe, family = binomial(link = "logit"))
+pred_ext2 <- predict(m_ext2, newdata = test_fe, type = "response")
+yhat_ext2 <- as.integer(pred_ext2 >= 0.5)
+ce_ext2   <- mean(abs(test_fe$donation - yhat_ext2))
+
+# Model 3: + recency_ratio (without freq_time — the chosen final model)
+# freq_time is excluded here because the incremental comparison shows it adds no improvement over log_recency alone; by Occam's Razor we prefer the leaner model.
+m_ext3    <- glm(donation ~ recency + frequency + time + log_recency + recency_ratio,
+                 data = train_fe, family = binomial(link = "logit"))
+pred_ext3 <- predict(m_ext3, newdata = test_fe, type = "response")
+yhat_ext3 <- as.integer(pred_ext3 >= 0.5)
+ce_ext3   <- mean(abs(test_fe$donation - yhat_ext3))
+
+pred_ext <- pred_ext3
+yhat_ext <- yhat_ext3
+ce_ext   <- ce_ext3
+```
+
+To improve classification performance, three derived features are evaluated:
+
+- **`log_recency`**: log of recency (plus 1 to avoid errors when recency = 0). This accounts for the diminishing marginal effect of time since last donation — the difference between 1 and 2 months is more informative than the difference between 20 and 21 months.
+- **`freq_time`**: frequency divided by (time + 1), representing a donation *rate* — how often someone donates per month on average. Tested but ultimately excluded from the final model (see below).
+- **`recency_ratio`**: recency / (time + 1), capturing how recently someone donated *relative to* how long they have been in the system.
+
+Variables are added one at a time to isolate each one's incremental contribution. `freq_time` is retained in the comparison (Extended 2) to document that it yields no improvement, explaining for its exclusion. The **final model** (Extended 3) therefore contains only `log_recency` and `recency_ratio` on top of the baseline predictors, achieving a
+**classification error of $\text{CE}_{\text{ext}} = `r round(ce_ext, 4)`$**, which
+`r ifelse(ce_ext < 0.20, "**beats the 0.20 target**", "approaches the 0.20 target")`.
+
+```{r ce-comparison-plot, fig.cap="Figure 6. Test-set classification error for the baseline and 3 extended models, each adding one variable incrementally. The red dashed line marks the 0.20 target."}
+
+tibble(
+  Model = c(
+    "Baseline\n(recency + frequency + time)",
+    "Extended 1\n(+ log_recency)",
+    "Extended 2\n(+ freq_time, dropped)",
+    "Final Model\n(+ recency_ratio, no freq_time)"
+  ),
+  CE = c(ce_base, ce_ext1, ce_ext2, ce_ext3)
+) %>%
+  # Keep the order of models as defined above
+  mutate(Model = factor(Model, levels = Model)) %>%
+  ggplot(aes(x = Model, y = CE, fill = Model)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  # Red dashed target line at 0.2
+  geom_hline(yintercept = 0.20, linetype = "dashed", colour = "#C62828", linewidth = 1) +
+  geom_text(aes(label = round(CE, 4)), vjust = -0.5, fontface = "bold", size = 4) +
+  annotate("text", x = 3.8, y = 0.205, label = "Target: 0.20",
+           colour = "#C62828", size = 3.8) +
+  scale_fill_manual(values = c("#1565C0", "#1976D2", "#2E7D32", "#1B5E20")) +
+  scale_y_continuous(limits = c(0, 0.30)) +
+  labs(title = "Classification error by model (test set)",
+       x = NULL, y = "Classification Error (CE)") +
+  theme_rep
+```
+
+```{r confusion-matrix-plot, fig.cap="Figure 7. Confusion matrix for the extended model on the test set. The model correctly identifies the large majority of non-donors but shows limited sensitivity for the minority donor class — a common pattern with imbalanced data."}
+
+tibble(
+  Predicted = factor(yhat_ext,         levels = c(0, 1), labels = c("Predicted: 0", "Predicted: 1")),
+  Actual    = factor(test_fe$donation, levels = c(0, 1), labels = c("Actual: 0",    "Actual: 1"))
+) %>%
+  count(Actual, Predicted) %>%
+  ggplot(aes(x = Predicted, y = Actual, fill = n)) +
+  geom_tile(colour = "white", linewidth = 1.5) +
+  geom_text(aes(label = n), size = 10, fontface = "bold", colour = "white") +
+  scale_fill_gradient(low = "#BBDEFB", high = "#1565C0", name = "Count") +
+  labs(title = "Confusion Matrix — Extended Model (Test Set)",
+       x = "Predicted class", y = "True class") +
+  theme_rep +
+  theme(legend.position = "none",
+        axis.text = element_text(size = 11, face = "bold"))
+```
+
+```{r roc-curve, fig.cap="Figure 8. ROC curve for the extended model on the test set, constructed by varying the classification threshold across all unique predicted probability values. The AUC summarises overall discriminative performance; a value well above 0.5 confirms the model substantially outperforms random guessing."}
+
+# ROC and AUC
+roc_df <- tibble(prob = pred_ext, actual = test_fe$donation) %>%
+  arrange(desc(prob)) %>%
+  mutate(
+    TP  = cumsum(actual == 1),
+    FP  = cumsum(actual == 0),
+    TPR = TP / sum(actual == 1),
+    FPR = FP / sum(actual == 0)
+  )
+
+auc_val <- roc_df %>%
+  arrange(FPR, TPR) %>%
+  summarise(
+    auc = sum(diff(FPR) * (head(TPR, -1) + tail(TPR, -1)) / 2)
+  ) %>%
+  pull(auc)
+
+ggplot(roc_df, aes(x = FPR, y = TPR)) +
+  geom_line(colour = "#1565C0", linewidth = 1.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey60") +
+  annotate("text", x = 0.65, y = 0.20,
+           label = paste0("AUC = ", round(auc_val, 3)),
+           size = 5, fontface = "bold", colour = "#1565C0") +
+  coord_equal() +
+  labs(title = "ROC Curve — Extended Model (Test Set)",
+       x = "False Positive Rate (1 - Specificity)",
+       y = "True Positive Rate (Sensitivity)") +
+  theme_rep
+```
+
+Figure 8 shows the ROC curve for the extended model, with an **AUC of `r round(auc_val, 3)`**. This indicates acceptable discriminative ability — substantially better than random guessing (AUC = 0.5). However, as Figure 7 illustrates, the default 0.5 threshold causes the model to miss a large proportion of true donors. Lowering the threshold or applying class-weighting could improve recall for the minority class.
+
+---
+
+# Discussion
+
+**a)**
+Once we look at the correlation matrix, it becomes clear why the two models in a) look identical. That is, amount = 250 × frequency for every single row in this dataset. Every donation is 250 c.c. So these 2 variables are just different units of the same thing. Naturally, when you build a model with one and then with the other, you get the exact same fit such as same AIC, same deviance (just with a differently scaled x-axis). The takeaway is that we should only use one of them in any model. We go with frequency since it's easier to illustrate.
+
+**b)**
+All 3 link functions (logit, probit, cloglog) fit the recency model about equally well. In the middle of the data, their predicted curves almost perfectly overlap. The main difference shows up as the cloglog curve is asymmetric and drops off faster for donors who gave very recently. This comes from the shape of the extreme value distribution that cloglog is based on. But since the overall fit is the same, we don't have a strong statistical reason to pick one over the others. Logit wins by default because it is the standard and the coefficients have a clean interpretation as log-odds.
+
+**c)**
+The baseline model (recency + frequency + time) already performs reasonably well. Three candidate features were evaluated incrementally: `log_recency`, `freq_time`, and `recency_ratio`. Adding `log_recency` alone produced an immediate improvement, reflecting the non-linear relationship between recency and donation probability. However, adding `freq_time` next yielded no further reduction in classification error, suggesting that the donation rate is already adequately captured by the existing `frequency` and `time` predictors. Consistent with Occam's Razor, `freq_time` is therefore excluded from the final model — retaining a predictor that contributes nothing adds complexity without benefit. Adding `recency_ratio` to the model with only `log_recency` produced the largest single gain, as it encodes how recently a donor gave *relative to* their total time in the system — information not captured by any individual predictor alone. The final model (baseline + `log_recency` + `recency_ratio`) achieves a classification error of `r round(ce_ext, 4)`, which `r ifelse(ce_ext < 0.20, "falls below", "approaches")` the 0.20 target.
+
+The confusion matrix (Figure 7) tells a more nuanced story. The model is very good at correctly identifying non donors but it misses a lot of actual donors. This is a classic problem with imbalanced data. Especially when 76% of people didn't donate, the safest prediction is almost always "won't donate" and you'll be right most of the time. But from a practical standpoint, if you were a blood bank trying to identify who to contact, missing actual donors is exactly what you want to avoid.
+
+The ROC curve (Figure 8) with an AUC of `r round(auc_val, 3)` shows the model does meaningfully better than random but there's room to improve. One easy thing to try would be lowering the classification threshold below 0.5 to catch more donors, even if it means a few more false alarms.
+
+**Conclusion**
+
+Logistic regression is a good fit for this problem. The most important predictor is recency. Frequency also helps. Amount doesn't add anything extra once frequency is in the model because the two variables are perfectly identical in this dataset.
+Comparing link functions showed that logit, probit, and cloglog all perform similarly.
+
+Besides, the incremental evaluation illustrates Occam's Razor in practice. `freq_time` yielded no improvement in classification error when added after `log_recency` — the error remained unchanged at `r round(ce_ext2, 4)`. There is therefore no justification for retaining it since it increases model complexity without any predictive benefit and it is excluded from the final model. The chosen final model wuould be baseline predictors plus `log_recency` and `recency_ratio`,  both leaner and equally or more accurate than the full three-feature extension.
+
+---
